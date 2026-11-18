@@ -578,6 +578,13 @@ const TABLES = [
 ];
 const SEATS_PER_TABLE = 8;
 const MAX_CAPACITY = 50;
+
+// 3D zalda fiqurun qız/oğlan olması soyaddan avtomatik təyin olunur
+// (-ova / -yeva / qızı → qız, -ov / -yev / oğlu → oğlan).
+// Səhv çıxarsa və ya soyad yazılmayıbsa, burada düzəldin:  "q" = qız, "o" = oğlan
+const GENDER = {
+  // "Aysel Məmmədova": "q",
+};
 /* ===================================================================== */
 
 const $ = s => document.querySelector(s);
@@ -785,7 +792,7 @@ if (supportsWebGL()) {
 }
 
 window.__seating = {
-  EVENT, TABLES, COUPLE, SEATS: SEATS_PER_TABLE,
+  EVENT, TABLES, COUPLE, SEATS: SEATS_PER_TABLE, GENDER, norm,
   selectByNo(no) {
     const t = no === 0 ? COUPLE : TABLES.find(x => x.no === no);
     if (t) select(t, null, true);
@@ -990,7 +997,100 @@ const MAT = {
   plate:   () => withBase(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 })),
   flower:  () => withBase(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 })),
   flame:   () => withBase(new THREE.SpriteMaterial({ map: GLOW, color: 0xffc070, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true })),
+  people:  () => withBase(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72 })),
 };
+const PERSON_GLOW = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, emissive: 0xc8913e, emissiveIntensity: 0.12 });
+
+/* ---------- Seated guests (qız / oğlan) ---------- */
+const GENDER_MAP = Object.fromEntries(Object.entries(S.GENDER || {}).map(([k, v]) => [S.norm(k), /^q|^f/i.test(v) ? "f" : "m"]));
+function genderOf(name) {
+  const n = S.norm(name);
+  if (GENDER_MAP[n]) return GENDER_MAP[n];
+  const words = n.split(" ");
+  const last = words[words.length - 1];
+  if (words.length > 1) {
+    if (/(ova|eva|yeva|qizi|kizi)$/.test(last)) return "f";
+    if (/(ov|ev|yev|oglu)$/.test(last)) return "m";
+  }
+  return /[ae]$/.test(words[0]) ? "f" : "m";   // təkcə ad yazılıbsa, kobud təxmin
+}
+
+const SKIN   = ["#f1c9a5", "#e8b48f", "#dca27d", "#f5d6bc"];
+const HAIR_M = ["#2b1d16", "#3b2a20", "#1d1612", "#4a3426"];
+const HAIR_F = ["#3b2a20", "#5a3d2b", "#2b1d16", "#7a5236", "#1d1612", "#9a6a43"];
+const SUIT   = ["#2d3550", "#2a2a2e", "#3a3f4a", "#4a3b33", "#23324a", "#3d3a36"];
+const DRESS  = ["#e8b4ad", "#d9c2e3", "#b9cdb6", "#f2d7b6", "#c9a0a6", "#a9c1d9", "#e7c9a9", "#b5838d"];
+const TIE    = ["#8f6b38", "#7a2e3a", "#c9a063", "#3b4a6b", "#b5838d"];
+let pseed = 3;
+const prnd = () => { pseed = (pseed * 16807) % 2147483647; return (pseed - 1) / 2147483646; };
+const pickColor = a => new THREE.Color(a[Math.floor(prnd() * a.length)]);
+
+function colored(geo, col, x, y, z) {
+  geo.translate(x, y, z);
+  const n = geo.attributes.position.count, arr = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { arr[i * 3] = col.r; arr[i * 3 + 1] = col.g; arr[i * 3 + 2] = col.b; }
+  geo.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+  return geo;
+}
+const cap = (r, len, axis) => {
+  const g = new THREE.CapsuleGeometry(r, len, 4, 10);
+  if (axis === "z") g.rotateX(Math.PI / 2);
+  if (axis === "x") g.rotateZ(Math.PI / 2);
+  return g;
+};
+
+// Stulun öz koordinatlarında oturmuş fiqur (üzü +z, yəni masaya tərəf)
+function buildPerson(gender, role) {
+  const f = gender === "f";
+  const skin = pickColor(SKIN), hair = pickColor(f ? HAIR_F : HAIR_M);
+  const cloth = role === "groom" ? new THREE.Color("#1c1c22")
+              : role === "bride" ? new THREE.Color("#fbf1e6")
+              : pickColor(f ? DRESS : SUIT);
+  const shoes = new THREE.Color(f ? "#5a3b30" : "#17120f");
+  const bareArms = f && (role === "bride" || prnd() < 0.5);
+  const P = [];
+  const hx = f ? 0.082 : 0.09;
+
+  P.push(colored(cap(f ? 0.1 : 0.095, f ? 0.14 : 0.16, "x"), cloth, 0, 0.58, -0.02));        // pelvis
+  [-1, 1].forEach(s => {
+    P.push(colored(cap(f ? 0.074 : 0.066, 0.26, "z"), cloth, s * hx, 0.58, 0.13));          // thigh
+    P.push(colored(cap(0.05, 0.3, "y"), f ? skin : cloth, s * hx, 0.31, 0.3));              // shin
+    P.push(colored(new THREE.BoxGeometry(0.08, 0.05, 0.15), shoes, s * hx, 0.04, 0.34));     // shoe
+  });
+  if (f) {
+    P.push(colored(new THREE.BoxGeometry(0.31, 0.07, 0.3), cloth, 0, 0.6, 0.12));            // lap
+    P.push(colored(new THREE.BoxGeometry(0.31, 0.2, 0.035), cloth, 0, 0.5, 0.29));           // skirt over knees
+  }
+  const torso = new THREE.CylinderGeometry(f ? 0.128 : 0.165, f ? 0.108 : 0.14, 0.4, 14);
+  torso.scale(1, 1, 0.72);
+  P.push(colored(torso, cloth, 0, 0.82, -0.04));
+  P.push(colored(cap(f ? 0.058 : 0.07, f ? 0.2 : 0.26, "x"), bareArms ? skin : cloth, 0, 1.0, -0.04)); // shoulders
+  if (!f) {
+    P.push(colored(new THREE.BoxGeometry(0.075, 0.2, 0.01), new THREE.Color("#f4f1ec"), 0, 0.93, 0.072)); // shirt
+    P.push(colored(new THREE.BoxGeometry(0.026, 0.17, 0.012), role === "groom" ? new THREE.Color("#c9a063") : pickColor(TIE), 0, 0.92, 0.08)); // tie
+  }
+  P.push(colored(new THREE.CylinderGeometry(0.04, 0.045, 0.09, 10), skin, 0, 1.08, -0.03));  // neck
+  const headG = new THREE.SphereGeometry(0.1, 16, 12); headG.scale(0.92, 1.08, 0.98);
+  P.push(colored(headG, skin, 0, 1.21, -0.02));                                               // head
+  const hairG = new THREE.SphereGeometry(0.108, 16, 10, 0, TAU, 0, Math.PI * 0.55); hairG.scale(0.95, 1.08, 1.02);
+  P.push(colored(hairG, hair, 0, 1.225, -0.03));                                              // hair cap
+  if (f) {
+    if (role === "bride" || prnd() < 0.5) {
+      const long = cap(0.088, 0.2, "y"); long.scale(1, 1, 0.7);
+      P.push(colored(long, hair, 0, 1.07, -0.085));                                           // long hair
+    } else {
+      P.push(colored(new THREE.SphereGeometry(0.058, 12, 10), hair, 0, 1.3, -0.1));           // bun
+    }
+  }
+  const ax = f ? 0.162 : 0.2;
+  const sleeve = bareArms ? skin : cloth;
+  [-1, 1].forEach(s => {
+    P.push(colored(cap(f ? 0.036 : 0.045, 0.2, "y"), sleeve, s * ax, 0.86, -0.03));           // upper arm
+    P.push(colored(cap(f ? 0.033 : 0.04, 0.2, "z"), sleeve, s * (ax - 0.01), 0.73, 0.09));    // forearm
+    P.push(colored(new THREE.SphereGeometry(0.037, 10, 8), skin, s * (ax - 0.01), 0.74, 0.22)); // hand
+  });
+  return mergeGeometries(P);
+}
 const FLOWER_COLORS = ["#f4d7cf", "#eab5ac", "#fff6ec", "#dc9c94", "#f6e2c4", "#c9807b", "#fbeae4"].map(c => new THREE.Color(c));
 const LEAF = new THREE.Color("#7c8f68");
 
@@ -1078,7 +1178,7 @@ function addCandles(g, mats, flames, spots) {
 const R_CHAIR = 1.3;
 function buildRoundTable(t) {
   const g = new THREE.Group();
-  const mats = { cloth: MAT.cloth(), gold: MAT.gold(), cushion: MAT.cushion(), plate: MAT.plate(), flower: MAT.flower(), flame: MAT.flame() };
+  const mats = { cloth: MAT.cloth(), gold: MAT.gold(), cushion: MAT.cushion(), plate: MAT.plate(), flower: MAT.flower(), flame: MAT.flame(), people: MAT.people() };
   const emptyMat = MAT.gold(); emptyMat.transparent = true; emptyMat.opacity = 0.25;
   mats.empty = emptyMat;
 
@@ -1120,11 +1220,16 @@ function buildRoundTable(t) {
     const c = new THREE.Group();
     const frame = new THREE.Mesh(CHAIR_GEO, occupied ? mats.gold : emptyMat);
     c.add(frame);
-    if (occupied) c.add(new THREE.Mesh(CUSHION_GEO, mats.cushion));
+    let person = null;
+    if (occupied) {
+      c.add(new THREE.Mesh(CUSHION_GEO, mats.cushion));
+      person = new THREE.Mesh(buildPerson(genderOf(t.guests[i])), mats.people);
+      c.add(person);
+    }
     c.position.set(Math.sin(a) * R_CHAIR, 0, -Math.cos(a) * R_CHAIR);
     c.rotation.y = -a;
     g.add(c);
-    chairs.push({ group: c, frame, base: frame.material });
+    chairs.push({ group: c, frame, base: frame.material, person });
   }
 
   const sprite = numberSprite(t.no);
@@ -1143,7 +1248,7 @@ function buildRoundTable(t) {
 const STAGE_Y = 0.22;
 function buildCoupleTable() {
   const g = new THREE.Group();
-  const mats = { cloth: MAT.cloth(), gold: MAT.gold(), cushion: MAT.cushion(), plate: MAT.plate(), flower: MAT.flower(), flame: MAT.flame() };
+  const mats = { cloth: MAT.cloth(), gold: MAT.gold(), cushion: MAT.cushion(), plate: MAT.plate(), flower: MAT.flower(), flame: MAT.flame(), people: MAT.people() };
   const skirt = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.74, 0.76), mats.cloth);
   skirt.position.y = 0.37;
   const top = new THREE.Mesh(new THREE.BoxGeometry(2.34, 0.03, 0.8), mats.cloth);
@@ -1176,13 +1281,14 @@ function buildCoupleTable() {
   addCandles(g, mats, flames, [[-1, 0.77, 0.05], [-0.85, 0.77, 0.12], [0.85, 0.77, 0.12], [1, 0.77, 0.05]]);
 
   const chairs = [];
-  [-0.5, 0.5].forEach((x) => {
+  [-0.5, 0.5].forEach((x, i) => {
     const c = new THREE.Group();
     const frame = new THREE.Mesh(CHAIR_GEO, mats.gold);
-    c.add(frame, new THREE.Mesh(CUSHION_GEO, mats.cushion));
+    const person = new THREE.Mesh(buildPerson(i === 0 ? "m" : "f", i === 0 ? "groom" : "bride"), mats.people);
+    c.add(frame, new THREE.Mesh(CUSHION_GEO, mats.cushion), person);
     c.position.set(x, 0, -0.68);
     g.add(c);
-    chairs.push({ group: c, frame, base: frame.material });
+    chairs.push({ group: c, frame, base: frame.material, person });
   });
 
   const hit = new THREE.Mesh(new THREE.BoxGeometry(3, 1.4, 2), HIT_MAT);
@@ -1485,6 +1591,7 @@ function applyFocusVisuals() {
   if (seat != null) {
     const ch = o.chairs[seat];
     ch.frame.material = CHAIR_GLOW;
+    if (ch.person) ch.person.material = PERSON_GLOW;
     marker.userData.chair = ch;
     marker.visible = true;
   }
@@ -1513,7 +1620,10 @@ function buildLabels(o, seat) {
   });
 }
 function clearFocusVisuals() {
-  T.forEach(x => { x.dimTarget = 1; x.chairs.forEach(c => c.frame.material = c.base); });
+  T.forEach(x => {
+    x.dimTarget = 1;
+    x.chairs.forEach(c => { c.frame.material = c.base; if (c.person) c.person.material = x.mats.find(m => m.vertexColors); });
+  });
   marker.visible = false;
   marker.userData.chair = null;
   namesEl.innerHTML = "";
@@ -1650,7 +1760,7 @@ function update(dt) {
 
   if (marker.visible && marker.userData.chair) {
     marker.userData.chair.group.getWorldPosition(tmp);
-    marker.position.set(tmp.x, tmp.y + 1.25 + Math.sin(time * 3) * 0.07, tmp.z);
+    marker.position.set(tmp.x, tmp.y + 1.5 + Math.sin(time * 3) * 0.06, tmp.z);
     marker.rotation.y += dt * 1.6;
     CHAIR_GLOW.emissiveIntensity = 0.5 + 0.35 * Math.sin(time * 4);
   }
@@ -1680,7 +1790,7 @@ function update(dt) {
 function updateLabels() {
   for (const L of labels) {
     L.chair.group.getWorldPosition(tmp);
-    tmp.y += L.me ? 1.62 : 1.12;
+    tmp.y += L.me ? 2.08 : 1.5;
     tmp.project(camera);
     const vis = !fly && tmp.z < 1;
     L.el.classList.toggle("show", vis);
